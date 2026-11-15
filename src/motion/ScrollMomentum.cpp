@@ -44,6 +44,9 @@ constexpr qreal kDecayMs = 325.0;
 constexpr qreal kMinSpeed = 0.1;
 constexpr qreal kRestSpeed = 0.02;
 constexpr qreal kMaxSpeed = 8.0;
+// velocity impulse per standard 120-unit mouse wheel notch (px/ms): with
+// kDecayMs = 325 ms, one notch glides ~160 px and fast spins accumulate
+constexpr qreal kWheelImpulse = 0.5;
 constexpr int kTickMs = 8;
 
 qreal length(const QPointF &point)
@@ -72,17 +75,21 @@ bool ScrollMomentum::eventFilter(QObject *watched, QEvent *event)
         const auto *wheel = static_cast<const QWheelEvent *>(event);
         qCDebug(lcScroll) << wheel->timestamp() << wheel->phase() << wheel->source() << wheel->pixelDelta()
                           << wheel->angleDelta() << wheel->device();
-        // a new touch, or a mouse's wheel, takes over from a glide. an end
-        // does not: the window can see one end twice (on hyprland), and the
-        // second stopped the glide the first had just started
-        if (wheel->phase() != Qt::ScrollEnd) {
-            stop();
-        }
-        // only a trackpad says when the fingers lift; a mouse's wheel has
-        // no phases and qt already eases it
+        // a new touch takes over from a glide; an end does not: the window can
+        // see one end twice (on hyprland), and the second stopped the glide
+        // the first had just started. a mouse wheel with no pixelDelta gets
+        // an accumulating glide impulse so long lists scroll smoothly and fast.
         if (wheel->source() != Qt::MouseEventSynthesizedBySystem) {
             m_samples.clear();
+            if (wheel->pixelDelta().isNull() && !wheel->angleDelta().isNull()) {
+                impulse(window, wheel);
+            } else if (wheel->phase() != Qt::ScrollEnd) {
+                stop();
+            }
             break;
+        }
+        if (wheel->phase() != Qt::ScrollEnd) {
+            stop();
         }
         switch (wheel->phase()) {
         case Qt::ScrollBegin:
@@ -136,6 +143,33 @@ void ScrollMomentum::track(QWindow *window, const QWheelEvent *event)
     }
     while (!m_samples.isEmpty() && m_samples.constLast().timestamp - m_samples.constFirst().timestamp > kSampleWindowMs) {
         m_samples.removeFirst();
+    }
+}
+
+void ScrollMomentum::impulse(QWindow *window, const QWheelEvent *event)
+{
+    const QPointF delta = (QPointF(event->angleDelta()) / 120.0) * kWheelImpulse;
+    if (window != m_window || !m_gliding || QPointF::dotProduct(m_velocity, delta) < 0) {
+        m_velocity = {};
+        m_remainder = {};
+    }
+    m_window = window;
+    m_position = event->position();
+    m_globalPosition = event->globalPosition();
+    m_modifiers = event->modifiers();
+    m_inverted = event->inverted();
+    m_timestamp = event->timestamp();
+
+    m_velocity += delta;
+    const qreal speed = length(m_velocity);
+    if (speed > kMaxSpeed) {
+        m_velocity *= kMaxSpeed / speed;
+    }
+    if (!m_gliding && speed >= kRestSpeed) {
+        m_gliding = true;
+        m_clock.start();
+        m_lastTick = 0;
+        m_timer.start();
     }
 }
 

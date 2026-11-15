@@ -53,6 +53,7 @@ private:
     };
 
     void track(QWindow *window, const QWheelEvent *event);
+    void impulse(QWindow *window, const QWheelEvent *event);
     void start(const QWheelEvent *end);
     void glide();
     void stop();
